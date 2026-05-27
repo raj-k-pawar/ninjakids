@@ -1,0 +1,137 @@
+workflows:
+  android-release:
+    name: NinjaKids Android Release
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+
+    environment:
+      flutter: stable
+      android_signing:
+        - ninjkids_keystore
+      groups:
+        - google_credentials
+        - firebase_credentials
+        - openai_credentials
+      vars:
+        PACKAGE_NAME: "com.ninjkids.app"
+        GOOGLE_PLAY_TRACK: internal
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+        - pattern: release/*
+          include: true
+
+    cache:
+      cache_paths:
+        - $FLUTTER_ROOT/.pub-cache
+        - $HOME/.gradle/caches
+
+    scripts:
+      - name: Set up local.properties
+        script: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+
+      - name: Write google-services.json
+        script: |
+          echo $GOOGLE_SERVICES_JSON | base64 --decode > "$CM_BUILD_DIR/android/app/google-services.json"
+
+      - name: Write key.properties
+        script: |
+          cat >> "$CM_BUILD_DIR/android/key.properties" <<EOF
+          storePassword=$CM_KEYSTORE_PASSWORD
+          keyPassword=$CM_KEY_PASSWORD
+          keyAlias=$CM_KEY_ALIAS
+          storeFile=/tmp/keystore.jks
+          EOF
+
+      - name: Set up environment variables
+        script: |
+          cat > "$CM_BUILD_DIR/.env" <<EOF
+          OPENAI_API_KEY=$OPENAI_API_KEY
+          EOF
+
+      - name: Get Flutter packages
+        script: flutter pub get
+
+      - name: Run code generation
+        script: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Run tests
+        script: flutter test --coverage
+
+      - name: Build APK (Debug — for QA)
+        script: |
+          flutter build apk --debug \
+            --dart-define=OPENAI_API_KEY=$OPENAI_API_KEY
+
+      - name: Build APK (Release)
+        script: |
+          flutter build apk --release \
+            --dart-define=OPENAI_API_KEY=$OPENAI_API_KEY \
+            --build-name=1.0.$BUILD_NUMBER \
+            --build-number=$BUILD_NUMBER
+
+      - name: Build App Bundle (Release)
+        script: |
+          flutter build appbundle --release \
+            --dart-define=OPENAI_API_KEY=$OPENAI_API_KEY \
+            --build-name=1.0.$BUILD_NUMBER \
+            --build-number=$BUILD_NUMBER
+
+    artifacts:
+      - build/**/outputs/**/*.apk
+      - build/**/outputs/**/*.aab
+      - build/**/outputs/**/mapping.txt
+      - flutter_drive.log
+
+    publishing:
+      email:
+        recipients:
+          - developer@ninjkids.com
+        notify:
+          success: true
+          failure: true
+
+      google_play:
+        credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
+        track: $GOOGLE_PLAY_TRACK
+        submit_as_draft: true
+
+  android-debug:
+    name: NinjaKids Android Debug (PR)
+    max_build_duration: 30
+    instance_type: linux_x2
+
+    environment:
+      flutter: stable
+      vars:
+        PACKAGE_NAME: "com.ninjkids.app"
+
+    triggering:
+      events:
+        - pull_request
+      branch_patterns:
+        - pattern: '*'
+          include: true
+
+    scripts:
+      - name: Get Flutter packages
+        script: flutter pub get
+
+      - name: Analyze code
+        script: flutter analyze --no-fatal-infos
+
+      - name: Run tests
+        script: flutter test
+
+      - name: Build APK
+        script: |
+          flutter build apk --debug \
+            --dart-define=OPENAI_API_KEY=test_key
+
+    artifacts:
+      - build/**/outputs/**/*.apk
