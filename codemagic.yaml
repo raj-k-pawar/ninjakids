@@ -1,15 +1,30 @@
 workflows:
+
+  # ── 1. RELEASE WORKFLOW (main / release/* branches) ───────────────────────
+  # Requires these variable groups in Codemagic dashboard > Teams > Global variables:
+  #   "keystore_credentials"  → CM_KEYSTORE_PATH, CM_KEYSTORE_PASSWORD,
+  #                             CM_KEY_ALIAS, CM_KEY_PASSWORD
+  #   "firebase_credentials"  → GOOGLE_SERVICES_JSON  (base64 of google-services.json)
+  #   "openai_credentials"    → OPENAI_API_KEY
+  #
+  # Keystore setup (Codemagic UI):
+  #   App Settings > Code signing > Android > Upload your .jks file.
+  #   Codemagic sets CM_KEYSTORE_PATH automatically. Do NOT use
+  #   the "android_signing" block — just reference CM_KEYSTORE_PATH in the script.
   android-release:
-    name: NinjaKids Android Release
+    name: NinjaKids — Android Release
     max_build_duration: 60
-    instance_type: mac_mini_m1
+    instance_type: linux_x2
 
     environment:
       flutter: stable
-      android_signing:
-        - ninjkids_keystore
+      # NOTE: No "android_signing" key here.
+      # Using android_signing requires the keystore reference name to
+      # exactly match an uploaded keystore in Codemagic Code Signing.
+      # We handle signing manually via key.properties instead, which
+      # means the workflow works even before a keystore is uploaded.
       groups:
-        - google_credentials
+        - keystore_credentials
         - firebase_credentials
         - openai_credentials
       vars:
@@ -22,7 +37,7 @@ workflows:
       branch_patterns:
         - pattern: main
           include: true
-        - pattern: release/*
+        - pattern: "release/*"
           include: true
 
     cache:
@@ -37,22 +52,25 @@ workflows:
 
       - name: Write google-services.json
         script: |
-          echo $GOOGLE_SERVICES_JSON | base64 --decode > "$CM_BUILD_DIR/android/app/google-services.json"
+          echo "$GOOGLE_SERVICES_JSON" | base64 --decode \
+            > "$CM_BUILD_DIR/android/app/google-services.json"
 
-      - name: Write key.properties
+      - name: Set up keystore signing
         script: |
-          cat >> "$CM_BUILD_DIR/android/key.properties" <<EOF
+          # CM_KEYSTORE_PATH is written by Codemagic when you upload a keystore
+          # under App Settings > Code signing > Android.
+          # If not yet uploaded, we skip release signing and fall back to debug.
+          if [ -n "$CM_KEYSTORE_PATH" ] && [ -f "$CM_KEYSTORE_PATH" ]; then
+            cat > "$CM_BUILD_DIR/android/key.properties" <<EOF
           storePassword=$CM_KEYSTORE_PASSWORD
           keyPassword=$CM_KEY_PASSWORD
           keyAlias=$CM_KEY_ALIAS
-          storeFile=/tmp/keystore.jks
+          storeFile=$CM_KEYSTORE_PATH
           EOF
-
-      - name: Set up environment variables
-        script: |
-          cat > "$CM_BUILD_DIR/.env" <<EOF
-          OPENAI_API_KEY=$OPENAI_API_KEY
-          EOF
+            echo "key.properties written — release signing enabled."
+          else
+            echo "CM_KEYSTORE_PATH not set or file missing — will build debug-signed APK."
+          fi
 
       - name: Get Flutter packages
         script: flutter pub get
@@ -60,33 +78,41 @@ workflows:
       - name: Run code generation
         script: flutter pub run build_runner build --delete-conflicting-outputs
 
+      - name: Analyze
+        script: flutter analyze --no-fatal-infos
+
       - name: Run tests
         script: flutter test --coverage
 
-      - name: Build APK (Debug — for QA)
+      - name: Build APK
         script: |
-          flutter build apk --debug \
-            --dart-define=OPENAI_API_KEY=$OPENAI_API_KEY
+          if [ -f "$CM_BUILD_DIR/android/key.properties" ]; then
+            flutter build apk --release \
+              --dart-define=OPENAI_API_KEY="$OPENAI_API_KEY" \
+              --build-name="1.0.$BUILD_NUMBER" \
+              --build-number="$BUILD_NUMBER"
+          else
+            flutter build apk --debug \
+              --dart-define=OPENAI_API_KEY="$OPENAI_API_KEY" \
+              --build-name="1.0.$BUILD_NUMBER" \
+              --build-number="$BUILD_NUMBER"
+          fi
 
-      - name: Build APK (Release)
+      - name: Build App Bundle (AAB)
         script: |
-          flutter build apk --release \
-            --dart-define=OPENAI_API_KEY=$OPENAI_API_KEY \
-            --build-name=1.0.$BUILD_NUMBER \
-            --build-number=$BUILD_NUMBER
-
-      - name: Build App Bundle (Release)
-        script: |
-          flutter build appbundle --release \
-            --dart-define=OPENAI_API_KEY=$OPENAI_API_KEY \
-            --build-name=1.0.$BUILD_NUMBER \
-            --build-number=$BUILD_NUMBER
+          if [ -f "$CM_BUILD_DIR/android/key.properties" ]; then
+            flutter build appbundle --release \
+              --dart-define=OPENAI_API_KEY="$OPENAI_API_KEY" \
+              --build-name="1.0.$BUILD_NUMBER" \
+              --build-number="$BUILD_NUMBER"
+          else
+            echo "Skipping AAB build — keystore not configured yet."
+          fi
 
     artifacts:
       - build/**/outputs/**/*.apk
       - build/**/outputs/**/*.aab
       - build/**/outputs/**/mapping.txt
-      - flutter_drive.log
 
     publishing:
       email:
@@ -95,19 +121,25 @@ workflows:
         notify:
           success: true
           failure: true
+      # Uncomment after uploading keystore + Google Play service account:
+      # google_play:
+      #   credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
+      #   track: $GOOGLE_PLAY_TRACK
+      #   submit_as_draft: true
 
-      google_play:
-        credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
-        track: $GOOGLE_PLAY_TRACK
-        submit_as_draft: true
 
+  # ── 2. DEBUG / PR WORKFLOW ─────────────────────────────────────────────────
+  # Triggers on every pull request. No signing required.
   android-debug:
-    name: NinjaKids Android Debug (PR)
+    name: NinjaKids — Android Debug (PR)
     max_build_duration: 30
     instance_type: linux_x2
 
     environment:
       flutter: stable
+      groups:
+        - firebase_credentials
+        - openai_credentials
       vars:
         PACKAGE_NAME: "com.ninjkids.app"
 
@@ -115,12 +147,29 @@ workflows:
       events:
         - pull_request
       branch_patterns:
-        - pattern: '*'
+        - pattern: "*"
           include: true
 
+    cache:
+      cache_paths:
+        - $FLUTTER_ROOT/.pub-cache
+        - $HOME/.gradle/caches
+
     scripts:
+      - name: Set up local.properties
+        script: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+
+      - name: Write google-services.json
+        script: |
+          echo "$GOOGLE_SERVICES_JSON" | base64 --decode \
+            > "$CM_BUILD_DIR/android/app/google-services.json"
+
       - name: Get Flutter packages
         script: flutter pub get
+
+      - name: Run code generation
+        script: flutter pub run build_runner build --delete-conflicting-outputs
 
       - name: Analyze code
         script: flutter analyze --no-fatal-infos
@@ -128,10 +177,70 @@ workflows:
       - name: Run tests
         script: flutter test
 
-      - name: Build APK
+      - name: Build debug APK
         script: |
           flutter build apk --debug \
-            --dart-define=OPENAI_API_KEY=test_key
+            --dart-define=OPENAI_API_KEY="$OPENAI_API_KEY"
+
+    artifacts:
+      - build/**/outputs/**/*.apk
+
+
+  # ── 3. COMPILE CHECK — no secrets needed ──────────────────────────────────
+  # Run this workflow first to confirm the project builds before
+  # configuring Firebase or uploading a keystore.
+  android-compile-check:
+    name: NinjaKids — Compile Check (no secrets)
+    max_build_duration: 20
+    instance_type: linux_x2
+
+    environment:
+      flutter: stable
+      vars:
+        PACKAGE_NAME: "com.ninjkids.app"
+
+    scripts:
+      - name: Set up local.properties
+        script: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > "$CM_BUILD_DIR/android/local.properties"
+
+      - name: Write placeholder google-services.json
+        script: |
+          cat > "$CM_BUILD_DIR/android/app/google-services.json" <<'EOF'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "ninjkids-placeholder",
+              "storage_bucket": "ninjkids-placeholder.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                "android_client_info": { "package_name": "com.ninjkids.app" }
+              },
+              "api_key": [{ "current_key": "placeholder_key" }],
+              "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+            }],
+            "configuration_version": "1"
+          }
+          EOF
+
+      - name: Get Flutter packages
+        script: flutter pub get
+
+      - name: Run code generation
+        script: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Analyze
+        script: flutter analyze --no-fatal-infos
+
+      - name: Run tests
+        script: flutter test
+
+      - name: Build debug APK
+        script: |
+          flutter build apk --debug \
+            --dart-define=OPENAI_API_KEY=placeholder_key
 
     artifacts:
       - build/**/outputs/**/*.apk
