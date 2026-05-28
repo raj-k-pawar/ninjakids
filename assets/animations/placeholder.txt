@@ -1,3 +1,0 @@
-# NinjaKids assets — animations
-# Add your animations files here.
-# This file exists to ensure the directory is tracked by git.
