@@ -1,0 +1,3 @@
+# NinjaKids assets — images
+# Add your images files here.
+# This file exists to ensure the directory is tracked by git.
