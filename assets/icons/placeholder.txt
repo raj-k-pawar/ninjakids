@@ -1,3 +1,0 @@
-# NinjaKids assets — icons
-# Add your icons files here.
-# This file exists to ensure the directory is tracked by git.
