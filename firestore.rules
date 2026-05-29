@@ -1,0 +1,145 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──────────────────────────────────────────────────
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isParentOf(kidId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/kids/$(kidId)) &&
+        get(/databases/$(database)/documents/kids/$(kidId)).data.parentId == request.auth.uid;
+    }
+
+    function isValidParentData() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['name', 'email']) &&
+             data.name is string &&
+             data.name.size() > 0 &&
+             data.name.size() <= 100;
+    }
+
+    function isValidKidData() {
+      let data = request.resource.data;
+      return data.keys().hasAll(['name', 'parentId', 'age', 'className']) &&
+             data.name is string &&
+             data.name.size() > 0 &&
+             data.age is int &&
+             data.age >= 3 &&
+             data.age <= 20;
+    }
+
+    // ── Users collection ──────────────────────────────────────────────────
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+      allow delete: if false; // Never allow user deletion from client
+    }
+
+    // ── Parents collection ────────────────────────────────────────────────
+
+    match /parents/{parentId} {
+      allow read: if isOwner(parentId);
+      allow create: if isOwner(parentId) && isValidParentData();
+      allow update: if isOwner(parentId) && isValidParentData();
+      allow delete: if false;
+    }
+
+    // ── Kids collection ───────────────────────────────────────────────────
+
+    match /kids/{kidId} {
+      // Parent can read/write their own kids
+      allow read: if isAuthenticated() &&
+        (resource.data.parentId == request.auth.uid);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.parentId == request.auth.uid &&
+        isValidKidData();
+
+      allow update: if isAuthenticated() &&
+        resource.data.parentId == request.auth.uid;
+
+      allow delete: if isAuthenticated() &&
+        resource.data.parentId == request.auth.uid;
+    }
+
+    // ── Quiz History ──────────────────────────────────────────────────────
+
+    match /quiz_history/{sessionId} {
+      allow read: if isAuthenticated() && (
+        resource.data.kidId == request.auth.uid ||
+        isParentOf(resource.data.kidId)
+      );
+      allow create: if isAuthenticated();
+      allow update: if false; // History is immutable
+      allow delete: if false;
+    }
+
+    // ── AI Questions (cached) ─────────────────────────────────────────────
+
+    match /ai_questions/{docId} {
+      // Only the app backend writes; kids/parents can read
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated(); // Cloud Functions preferred for write
+    }
+
+    // ── Speaking Scores ───────────────────────────────────────────────────
+
+    match /speaking_scores/{scoreId} {
+      allow read: if isAuthenticated() && (
+        resource.data.kidId == request.auth.uid ||
+        isParentOf(resource.data.kidId)
+      );
+      allow create: if isAuthenticated();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ── Achievements ──────────────────────────────────────────────────────
+
+    match /achievements/{kidId} {
+      allow read: if isAuthenticated() && (
+        kidId == request.auth.uid || isParentOf(kidId)
+      );
+      allow write: if isAuthenticated() && (
+        kidId == request.auth.uid || isParentOf(kidId)
+      );
+    }
+
+    // ── Screen Time Logs ──────────────────────────────────────────────────
+
+    match /screen_time_logs/{logId} {
+      allow read: if isAuthenticated() && (
+        resource.data.kidId == request.auth.uid ||
+        isParentOf(resource.data.kidId)
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() &&
+        resource.data.kidId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ── Subscriptions ─────────────────────────────────────────────────────
+
+    match /subscriptions/{parentId} {
+      allow read: if isOwner(parentId);
+      allow write: if false; // Managed by Cloud Functions / RevenueCat webhook
+    }
+
+    // ── Games (config / metadata) ─────────────────────────────────────────
+
+    match /games/{gameId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Admin only
+    }
+  }
+}

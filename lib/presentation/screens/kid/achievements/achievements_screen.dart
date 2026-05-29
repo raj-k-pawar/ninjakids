@@ -1,0 +1,6 @@
+import 'package:flutter/material.dart';
+class AchievementsScreen extends StatelessWidget {
+  const AchievementsScreen({super.key});
+  @override
+  Widget build(BuildContext context) => const Scaffold(body: Center(child: Text('AchievementsScreen')));
+}
