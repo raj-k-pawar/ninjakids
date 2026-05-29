@@ -1,3 +1,0 @@
-# NinjaKids assets — fonts
-# Add your fonts files here.
-# This file exists to ensure the directory is tracked by git.
