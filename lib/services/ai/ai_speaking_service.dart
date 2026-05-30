@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:speech_to_text/speech_listen_options.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
@@ -83,7 +82,7 @@ class AiSpeakingService {
           onResult(result.recognizedWords); // Live preview
         }
       },
-      listenOptions: SpeechListenOptions(
+      listenOptions: stt.SpeechListenOptions(
         listenFor: const Duration(seconds: 10),
         pauseFor: const Duration(seconds: 3),
         localeId: language == 'marathi' ? 'mr_IN' : 'en_US',
